@@ -28,7 +28,7 @@ const REMOTE_URL = 'https://fiddler.gasconnect.x10.mx';
 
   const originalOpenExternal = shell.openExternal;
   shell.openExternal = (url, options) => {
-    if (url.includes('identity.getfiddler.com') || url.includes('127.0.0.1:5678')) {
+    if (url.includes('identity.getfiddler.com') || url.includes('127.0.0.1')) {
       return require('electron').shell.openExternal(`${REMOTE_URL}/oauth/authorize`, options);
     }
     return require('electron').shell.openExternal(url, options);
@@ -70,6 +70,7 @@ const REMOTE_URL = 'https://fiddler.gasconnect.x10.mx';
       if (match) {
         const mainXJsPath = path.resolve(__dirname, `./WebServer/ClientApp/dist/${match[0]}`);
         let mainXJs = fs.readFileSync(mainXJsPath).toString();
+        // Redirigir la UI al Gateway local
         mainXJs = mainXJs.replace(/https:\/\/api\.getfiddler\.com/g, `http://127.0.0.1:${port}/api.getfiddler.com`);
         mainXJs = mainXJs.replace(/https:\/\/identity\.getfiddler\.com/g, `http://127.0.0.1:${port}/identity.getfiddler.com`);
         fs.writeFileSync(mainXJsPath, mainXJs);
@@ -98,10 +99,10 @@ const REMOTE_URL = 'https://fiddler.gasconnect.x10.mx';
       const token = url.searchParams.get('token');
       if (token) {
           fs.writeFileSync(tokenFile, token);
-          require('electron').BrowserWindow.getAllWindows().forEach(w => w.reload());
+          require('electron').BrowserWindow.getAllWindows().forEach(w => { if(w.webContents.getURL().includes('index.html')) w.reload(); });
       }
       res.setHeader('Content-Type', 'text/html');
-      res.end("<h1>Conectado a la Nube. Regresa a Fiddler.</h1><script>setTimeout(window.close, 1000)</script>");
+      res.end("<h1>Conectado</h1><script>setTimeout(window.close, 1000)</script>");
       return;
     }
 
@@ -129,23 +130,15 @@ const REMOTE_URL = 'https://fiddler.gasconnect.x10.mx';
           const signData = Object.keys(headers).map(k => `${k}:${headers[k]}`).join('\n') + bodyStr;
           const signPriKey = await subtle.importKey('pkcs8', priKey, { name: "ECDSA", namedCurve: "P-256" }, true, ['sign']);
           const signature = await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, signPriKey, Buffer.from(signData, 'binary'));
-          
-          const len = Buffer.from(new Uint8Array(4));
-          len.writeInt32BE(pubKey.byteLength);
+          const len = Buffer.from(new Uint8Array(4)); len.writeInt32BE(pubKey.byteLength);
           const sigHeader = Buffer.concat([new Uint8Array(len), new Uint8Array(pubKey), new Uint8Array(signature)]);
-          
           res.setHeader('Signature', `SignedHeaders=content-type, Signature=${sigHeader.toString('base64')}`);
         }
         res.end(body);
       });
     });
     
-    proxyReq.on('error', (e) => {
-      console.error('[PROXY ERROR]', e);
-      res.statusCode = 502;
-      res.end();
-    });
-
+    proxyReq.on('error', (e) => { res.statusCode = 502; res.end(); });
     req.pipe(proxyReq);
   }).listen(port);
 })();
