@@ -1,14 +1,14 @@
-const port = 5688;
+const port = 5678;
 const REMOTE_URL = 'https://fiddler.gasconnect.x10.mx';
 
 (() => {
-  console.info('========== Fiddler-everywhere-enhance (Cloud Dynamic) start ==========');
+  console.info('========== Fiddler-everywhere-enhance (Cloud Edition) start ==========');
   const { app, BrowserWindow, shell } = require('electron');
   const path = require('path');
   const fs = require('fs');
   const sp = require('child_process');
   
-  // 1. Bypass de Seguridad del motor .NET (Intercambio de package.json)
+  // 1. Bypass Seguridad (El truco de msojocs para evitar el Error 252)
   const originalSpwan = sp.spawn;
   sp.spawn = function(...args) {
     if (args[0] && args[0].includes('Fiddler.WebUi')) {
@@ -27,20 +27,13 @@ const REMOTE_URL = 'https://fiddler.gasconnect.x10.mx';
     fs.writeFileSync(pkg, JSON.stringify(data, null, 4));
   });
 
-  // 2. Redirección de Login (Evita Errores SSL en el navegador)
+  // 2. Redirección de Login Directa a la Nube (Evita Errores SSL locales)
   shell.openExternal = (url, options) => {
     if (url.includes('identity.getfiddler.com') || url.includes('127.0.0.1')) {
-      const authUrl = `${REMOTE_URL}/oauth/authorize`;
-      console.log(`[LOGIN] Redirecting to: ${authUrl}`);
-      return require('electron').shell.openExternal(authUrl, options);
+      return require('electron').shell.openExternal(`${REMOTE_URL}/oauth/authorize`, options);
     }
     return require('electron').shell.openExternal(url, options);
   };
-
-  // 3. Inyectar configuración de Electron (Bypass SSL Local)
-  app.on('ready', () => {
-    app.commandLine.appendSwitch('ignore-certificate-errors');
-  });
 
   const original_load = require("module")._load;
   require("module")._load = (...args) => {
@@ -50,7 +43,7 @@ const REMOTE_URL = 'https://fiddler.gasconnect.x10.mx';
   }
 })();
 
-// 4. Servidor Gateway (Proxy + Firma ECDSA)
+// 3. Servidor de Firma y Relay a tu PHP
 (async () => {
   const http = require('http');
   const https = require('https');
@@ -58,7 +51,6 @@ const REMOTE_URL = 'https://fiddler.gasconnect.x10.mx';
   const fs = require('fs');
   const { subtle } = require('crypto').webcrypto;
 
-  // Generar llaves de firma al vuelo (Fiddler las valida)
   const key = await subtle.generateKey({ name: 'ECDSA', hash: 'SHA-256', namedCurve: 'P-256', length: 256 }, true, ['sign', 'verify']);
   const pubKey = await subtle.exportKey('spki', key.publicKey);
   const priKey = await subtle.exportKey('pkcs8', key.privateKey);
@@ -67,14 +59,15 @@ const REMOTE_URL = 'https://fiddler.gasconnect.x10.mx';
     const url = new URL(req.url, `http://127.0.0.1:${port}`);
     const tokenFile = path.resolve(require('electron').app.getPath('userData'), 'fiddler_session.token');
     
+    // Captura del Token desde el navegador
     if (url.pathname === '/auth-callback') {
       const token = url.searchParams.get('token');
       if (token) {
           fs.writeFileSync(tokenFile, token);
-          require('electron').BrowserWindow.getAllWindows().forEach(w => w.reload());
+          require('electron').BrowserWindow.getAllWindows().forEach(w => { if(w.webContents.getURL().includes('index.html')) w.reload(); });
       }
       res.setHeader('Content-Type', 'text/html');
-      res.end("<h1>Conectado a Fiddler Cloud</h1><script>setTimeout(window.close, 1000)</script>");
+      res.end("<h1>Login Exitoso. Fiddler esta sincronizando...</h1><script>setTimeout(window.close, 1500)</script>");
       return;
     }
 
@@ -91,10 +84,7 @@ const REMOTE_URL = 'https://fiddler.gasconnect.x10.mx';
       pRes.on('end', async () => {
         const body = Buffer.concat(chunks);
         res.statusCode = pRes.statusCode;
-        
-        Object.keys(pRes.headers).forEach(h => {
-          if(h.toLowerCase() !== 'content-length') res.setHeader(h, pRes.headers[h]);
-        });
+        Object.keys(pRes.headers).forEach(h => { if(h.toLowerCase()!=='content-length') res.setHeader(h, pRes.headers[h]); });
 
         if (pRes.headers['content-type'] && pRes.headers['content-type'].includes('application/json')) {
           const bodyStr = body.toString('utf8');
@@ -102,17 +92,14 @@ const REMOTE_URL = 'https://fiddler.gasconnect.x10.mx';
           const signData = Object.keys(headers).map(k => `${k}:${headers[k]}`).join('\n') + bodyStr;
           const signPriKey = await subtle.importKey('pkcs8', priKey, { name: "ECDSA", namedCurve: "P-256" }, true, ['sign']);
           const signature = await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, signPriKey, Buffer.from(signData, 'binary'));
-          
-          const len = Buffer.from(new Uint8Array(4));
-          len.writeInt32BE(pubKey.byteLength);
+          const len = Buffer.from(new Uint8Array(4)); len.writeInt32BE(pubKey.byteLength);
           const sigHeader = Buffer.concat([new Uint8Array(len), new Uint8Array(pubKey), new Uint8Array(signature)]);
-          
           res.setHeader('Signature', `SignedHeaders=content-type, Signature=${sigHeader.toString('base64')}`);
         }
         res.end(body);
       });
     });
-    proxyReq.on('error', (e) => { res.statusCode = 502; res.end(); });
+    proxyReq.on('error', () => { res.statusCode = 502; res.end(); });
     req.pipe(proxyReq);
   }).listen(port);
 })();
